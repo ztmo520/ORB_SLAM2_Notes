@@ -414,21 +414,35 @@ static int bit_pattern_31_[256*4] =
     -1,-6, 0,-11/*mean (0.127148), correlation (0.547401)*/
 };
 
+/**
+ * @brief                           特征点提取器构造函数
+ *
+ * @param _nfeatures                要提取的特征点数目
+ * @param _scaleFactor              图像金字塔的缩放系数
+ * @param _nlevels                  图像金字塔的层数
+ * @param _iniThFAST                初始的FAST特征点提取参数，阈值较高
+ * @param _minThFAST                如果初始阈值没有提取到，则使用较低阈值
+ */
 ORBextractor::ORBextractor(int _nfeatures, float _scaleFactor, int _nlevels,
          int _iniThFAST, int _minThFAST):
     nfeatures(_nfeatures), scaleFactor(_scaleFactor), nlevels(_nlevels),
     iniThFAST(_iniThFAST), minThFAST(_minThFAST)
 {
+    //将存储每层缩放系数的向量调整到符合图层数目的大小
     mvScaleFactor.resize(nlevels);
+    //sigma^2是每层图像相对于初始图像缩放因子的平方
     mvLevelSigma2.resize(nlevels);
+    //设定对于初始图像，两个系数大小为1
     mvScaleFactor[0]=1.0f;
     mvLevelSigma2[0]=1.0f;
+    //逐层计算图像金字塔中各层图像相对于初始图像的缩放系数
     for(int i=1; i<nlevels; i++)
     {
         mvScaleFactor[i]=mvScaleFactor[i-1]*scaleFactor;
         mvLevelSigma2[i]=mvScaleFactor[i]*mvScaleFactor[i];
     }
 
+    //用两个向量分别保存上面两个向量的倒数
     mvInvScaleFactor.resize(nlevels);
     mvInvLevelSigma2.resize(nlevels);
     for(int i=0; i<nlevels; i++)
@@ -437,36 +451,58 @@ ORBextractor::ORBextractor(int _nfeatures, float _scaleFactor, int _nlevels,
         mvInvLevelSigma2[i]=1.0f/mvLevelSigma2[i];
     }
 
+    //调整图像金字塔vector，使其大小符合层数
     mvImagePyramid.resize(nlevels);
 
+    //保存每层特征点个数的向量
     mnFeaturesPerLevel.resize(nlevels);
+
+    //缩放系数的倒数
     float factor = 1.0f / scaleFactor;
+    //第0层应该分配的特征点数量，等比数列求和
     float nDesiredFeaturesPerScale = nfeatures*(1 - factor)/(1 - (float)pow((double)factor, (double)nlevels));
 
+    //记录累计分配的特征点个数
     int sumFeatures = 0;
+    //逐层计算要分配的特征点个数，最上层除外
     for( int level = 0; level < nlevels-1; level++ )
     {
         mnFeaturesPerLevel[level] = cvRound(nDesiredFeaturesPerScale);
         sumFeatures += mnFeaturesPerLevel[level];
         nDesiredFeaturesPerScale *= factor;
     }
+    //顶层分配的特征点个数
+    //cvRound是四舍五入，sumFeatures可能会超过总数，如果超过，顶层分配的数目为0，未超过则分配剩余的
     mnFeaturesPerLevel[nlevels-1] = std::max(nfeatures - sumFeatures, 0);
 
+    //pattern是以特征点为中心的区域（31*31）内的256个点对，共512个点，每个点都是相对于特征点中心的二维坐标
+    //比较每个点对的灰度值大小，结果用0或1表示，描述子就是256位的二进制数据
+    //用特征点的描述子的距离（汉明距离）来判断是否为同一特征点
     const int npoints = 512;
+    //类型的强转
     const Point* pattern0 = (const Point*)bit_pattern_31_;
+    //使用std::back_inserter的目的是可以快覆盖掉这个容器pattern之前的数据
+    //其实这里的操作就是，将在全局变量区域的、int格式的随机采样点以cv::point格式复制到当前类对象中的成员变量中
     std::copy(pattern0, pattern0 + npoints, std::back_inserter(pattern));
 
     //This is for orientation
     // pre-compute the end of a row in a circular patch
+    //计算特征点的旋转
+
     umax.resize(HALF_PATCH_SIZE + 1);
 
+    //vmax 是11，
     int v, v0, vmax = cvFloor(HALF_PATCH_SIZE * sqrt(2.f) / 2 + 1);
+    //vmin 也是11， 15乘二分之根号2向上取整
     int vmin = cvCeil(HALF_PATCH_SIZE * sqrt(2.f) / 2);
     const double hp2 = HALF_PATCH_SIZE*HALF_PATCH_SIZE;
+    // 0到45°圆弧的横坐标u的值（15，15，15，15，14，14，14，13，13，12，11，10）
     for (v = 0; v <= vmax; ++v)
         umax[v] = cvRound(sqrt(hp2 - v * v));
 
     // Make sure we are symmetric
+    //这里其实是使用了对称的方式计算上四分之一的圆周上的umax，目的也是为了保持严格的对称（如果按照常规的想法做，由于cvRound就会很容易出现不对称的情况，
+    //同时这些随机采样的特征点集也不能够满足旋转之后的采样不变性了）
     for (v = HALF_PATCH_SIZE, v0 = 0; v >= vmin; --v)
     {
         while (umax[v0] == umax[v0 + 1])
@@ -476,6 +512,13 @@ ORBextractor::ORBextractor(int _nfeatures, float _scaleFactor, int _nlevels,
     }
 }
 
+/**
+ * @brief                           计算特征点的方向
+ *
+ * @param image                     特征点当前所在金字塔的图像
+ * @param keypoints                 特征点向量
+ * @param umax                      每个特征点所在图像区块的每行边界umax组成的vector
+ */
 static void computeOrientation(const Mat& image, vector<KeyPoint>& keypoints, const vector<int>& umax)
 {
     for (vector<KeyPoint>::iterator keypoint = keypoints.begin(),
@@ -1047,22 +1090,37 @@ static void computeDescriptors(const Mat& image, vector<KeyPoint>& keypoints, Ma
         computeOrbDescriptor(keypoints[i], image, &pattern[0], descriptors.ptr((int)i));
 }
 
+/**
+ * @brief                       用仿函数（重载括号运算符）方法来计算图像特征点
+ *
+ * @param _image                输入的图像
+ * @param _mask                 图像掩膜
+ * @param _keypoints            关键点
+ * @param _descriptors          描述子
+ */
 void ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPoint>& _keypoints,
                       OutputArray _descriptors)
 { 
+    // Step 1: 检查图像有效性
     if(_image.empty())
         return;
 
+    // 获取图像（变为Mat矩阵？）
     Mat image = _image.getMat();
+    // 判断是否为单通道灰度
     assert(image.type() == CV_8UC1 );
 
     // Pre-compute the scale pyramid
+    // Step 2: 计算图像金字塔
     ComputePyramid(image);
 
+    // Step 3: 计算图像特征点，并将特征点均匀化
     vector < vector<KeyPoint> > allKeypoints;
     ComputeKeyPointsOctTree(allKeypoints);
     //ComputeKeyPointsOld(allKeypoints);
 
+    // Step 4: 拷贝特征点的描述子
+    // TODO
     Mat descriptors;
 
     int nkeypoints = 0;
@@ -1111,10 +1169,16 @@ void ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPo
     }
 }
 
+/**
+ * @brief           构建图像金字塔
+ * @param image     输入原始图像
+ */
 void ORBextractor::ComputePyramid(cv::Mat image)
 {
+    // 遍历所有图层
     for (int level = 0; level < nlevels; ++level)
     {
+        // 获取本图层的缩放系数
         float scale = mvInvScaleFactor[level];
         Size sz(cvRound((float)image.cols*scale), cvRound((float)image.rows*scale));
         Size wholeSize(sz.width + EDGE_THRESHOLD*2, sz.height + EDGE_THRESHOLD*2);

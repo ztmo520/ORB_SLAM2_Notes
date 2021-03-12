@@ -237,11 +237,23 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
     return mCurrentFrame.mTcw.clone();
 }
 
-
+/**
+ * @brief
+ * 输入左目图像，输出世界坐标系到该帧相机坐标系的变换矩阵
+ *
+ * @param im 单目图像
+ * @param timestamp 时间戳
+ * @return cv::Mat
+ *
+ * Step 1: 将彩色图像转为灰度图像
+ * Step 2: 构造Frame
+ * Step 3: 追踪
+ */
 cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp)
 {
     mImGray = im;
 
+    // Step 1: 彩色图像变为灰度图像
     if(mImGray.channels()==3)
     {
         if(mbRGB)
@@ -257,61 +269,86 @@ cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp)
             cvtColor(mImGray,mImGray,CV_BGRA2GRAY);
     }
 
+    // Step 2: 构造Frame
+    // 判断当前状态是还未初始化或者没有成功初始化
+    // 构建Frame的差别在参数mpIniORBextractor还是mpORBextractor
     if(mState==NOT_INITIALIZED || mState==NO_IMAGES_YET)
         mCurrentFrame = Frame(mImGray,timestamp,mpIniORBextractor,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth);
     else
         mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth);
 
+    // Step 3: 追踪
     Track();
 
     return mCurrentFrame.mTcw.clone();
 }
 
+/**
+ * @brief
+ * 追踪函数，主要是两个部分：估计运动、跟踪局部地图
+ *
+ * Step 1: 初始化
+ * Step 2: 跟踪
+ * Step 3：记录位姿信息，用于轨迹复现
+ */
 void Tracking::Track()
 {
+    // 第一次运行或者复位为NO_IMAGES_YET状态，变为初始化状态
     if(mState==NO_IMAGES_YET)
     {
         mState = NOT_INITIALIZED;
     }
 
+    // 记录最新的Tracking状态
     mLastProcessedState=mState;
 
     // Get Map Mutex -> Map cannot be changed
+    // 给地图更新上锁，防止地图变化
     unique_lock<mutex> lock(mpMap->mMutexMapUpdate);
 
+    // Step 1: 如果还未初始化，进行初始化
     if(mState==NOT_INITIALIZED)
     {
         if(mSensor==System::STEREO || mSensor==System::RGBD)
+            // 双目和RGB-D的初始化
             StereoInitialization();
         else
+            // 单目初始化
             MonocularInitialization();
 
+        // 更新帧绘制器的状态
         mpFrameDrawer->Update(this);
 
+        // 如果非OK，则返回
         if(mState!=OK)
             return;
     }
     else
     {
         // System is initialized. Track Frame.
+        // bOK是函数内变量，用来记录下面函数是否运行成功
         bool bOK;
 
         // Initial camera pose estimation using motion model or relocalization (if tracking is lost)
+        // 判断是否是定位模式
         if(!mbOnlyTracking)
         {
             // Local Mapping is activated. This is the normal behaviour, unless
             // you explicitly activate the "only tracking" mode.
-
+            // Step 2: 进入正常SLAM模式，有地图更新
             if(mState==OK)
             {
                 // Local Mapping might have changed some MapPoints tracked in last frame
+                // Step 2.1 检查并更新上一帧被替换的MapPoints
+                // 局部建图线程则可能会对原有的地图点进行替换.在这里进行检查
                 CheckReplacedInLastFrame();
 
                 if(mVelocity.empty() || mCurrentFrame.mnId<mnLastRelocFrameId+2)
                 {
                     bOK = TrackReferenceKeyFrame();
                 }
-                else
+                else// Step 2.1 检查并更新上一帧被替换的MapPoints
+                    // 局部建图线程则可能会对原有的地图点进行替换.在这里进行检查
                 {
                     bOK = TrackWithMotionModel();
                     if(!bOK)

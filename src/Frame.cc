@@ -182,38 +182,65 @@ Frame::Frame(const cv::Mat &imGray, const cv::Mat &imDepth, const double &timeSt
     AssignFeaturesToGrid();
 }
 
-
+/**
+ * @brief
+ * 单帧的构造函数
+ *
+ * @param imGray            // 灰度图
+ * @param timeStamp         // 图像时间戳
+ * @param extractor         // ORB特征点提取器的句柄
+ * @param voc               // ORB词典句柄
+ * @param K                 // 相机内参
+ * @param distCoef          // 去畸变系数
+ * @param bf                // baseline * f
+ * @param thDepth           // 区分远近点的深度阈值
+ */
 Frame::Frame(const cv::Mat &imGray, const double &timeStamp, ORBextractor* extractor,ORBVocabulary* voc, cv::Mat &K, cv::Mat &distCoef, const float &bf, const float &thDepth)
     :mpORBvocabulary(voc),mpORBextractorLeft(extractor),mpORBextractorRight(static_cast<ORBextractor*>(NULL)),
      mTimeStamp(timeStamp), mK(K.clone()),mDistCoef(distCoef.clone()), mbf(bf), mThDepth(thDepth)
 {
     // Frame ID
+    // Step 1: 帧ID增加
     mnId=nNextId++;
 
     // Scale Level Info
+    // Step 2: 计算图像金字塔参数
+    // 获取金字塔层数
     mnScaleLevels = mpORBextractorLeft->GetLevels();
+    // 获取每层的缩放因子
     mfScaleFactor = mpORBextractorLeft->GetScaleFactor();
+    // 计算缩放因子的自然对数
     mfLogScaleFactor = log(mfScaleFactor);
+    // 获取各层图像的缩放因子
     mvScaleFactors = mpORBextractorLeft->GetScaleFactors();
+    // 获取各层图像缩放因子的倒数
     mvInvScaleFactors = mpORBextractorLeft->GetInverseScaleFactors();
+    // 获取sigma^2
     mvLevelSigma2 = mpORBextractorLeft->GetScaleSigmaSquares();
+    // 获取simga^2的倒数
     mvInvLevelSigma2 = mpORBextractorLeft->GetInverseScaleSigmaSquares();
 
     // ORB extraction
+    // Step 3: 单帧图像提取特征点，0左图，1右图
     ExtractORB(0,imGray);
 
+    // 特征点个数
     N = mvKeys.size();
 
+    // 如果没有特征点，则直接返回
     if(mvKeys.empty())
         return;
 
+    // Step 4: 利用OpenCV的矫正函数和相机内参对特征点进行矫正
     UndistortKeyPoints();
 
     // Set no stereo information
     mvuRight = vector<float>(N,-1);
     mvDepth = vector<float>(N,-1);
 
+    // 初始化当前帧的地图点
     mvpMapPoints = vector<MapPoint*>(N,static_cast<MapPoint*>(NULL));
+    // 记录地图点是否为外点，初始化均为外点
     mvbOutlier = vector<bool>(N,false);
 
     // This is done only for the first Frame (or after a change in the calibration)
@@ -255,10 +282,16 @@ void Frame::AssignFeaturesToGrid()
             mGrid[nGridPosX][nGridPosY].push_back(i);
     }
 }
-
+/**
+ * @brief                   提取图像特征点，关键点存在mvKeys，描述子存在mDescriptors
+ *
+ * @param flag              左图还是右图
+ * @param im                等待提取特征的灰度图像
+ */
 void Frame::ExtractORB(int flag, const cv::Mat &im)
 {
     if(flag==0)
+        // 使用了仿函数来完成，重载了括号运算符 ORBextractor::operator()
         (*mpORBextractorLeft)(im,cv::Mat(),mvKeys,mDescriptors);
     else
         (*mpORBextractorRight)(im,cv::Mat(),mvKeysRight,mDescriptorsRight);
